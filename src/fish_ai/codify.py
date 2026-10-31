@@ -33,8 +33,8 @@ def get_instructions(commandline):
     ]
     (filename, file_contents) = engine.get_file_info(commandline)
     if filename:
-        instructions[-1]["content"] += textwrap.dedent("""\
-            The content of the file {filename} is'
+        instructions[-1]["content"] += "\n\n---\n\n" + textwrap.dedent("""\
+            The content of the file {filename} is:
 
             {file_contents}""").format(
             filename=filename, file_contents=file_contents
@@ -56,6 +56,7 @@ def codify():
     try:
         engine.get_logger().debug("Codifying commandline: " + commandline)
         response = engine.get_response(messages=get_messages(commandline))
+        engine.get_logger().debug(f"Codify response: {response!r}")
         print(response, end="")
     except Exception as e:
         engine.get_logger().exception(e)

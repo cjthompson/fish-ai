@@ -1,8 +1,13 @@
 # -*- coding: utf-8 -*-
 
+import logging
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from fish_ai.engine import (
+    get_claude_cli_args,
+    get_claude_prompt,
     get_commandline_history,
     get_messages,
     get_response,
@@ -612,3 +617,153 @@ def test_cheaperinference_default_model(mock_get_openai_client, mock_get_config)
     kwargs = mock_client.chat.completions.create.call_args.kwargs
     assert kwargs["model"] == "gpt-5.4-mini"
     assert kwargs["stream"] is False
+
+
+MINIMAL_FLAGS = [
+    "--setting-sources",
+    "",
+    "--disable-slash-commands",
+    "--strict-mcp-config",
+    "--tools",
+    "",
+]
+
+SUBSCRIPTION_CONFIG = {
+    "provider": "anthropic",
+    "use_subscription": "true",
+    "model": "claude-sonnet-5-5",
+    "redact": "False",
+    "minimal_mode": "True",
+    "effort": "medium",
+}
+
+
+def config_from(values):
+    return lambda key: values.get(key)
+
+
+def cli_args_for(values):
+    with patch("fish_ai.engine.get_config", side_effect=config_from(values)):
+        return get_claude_cli_args()
+
+
+def test_claude_cli_args_empty_by_default():
+    assert cli_args_for({}) == []
+
+
+@pytest.mark.parametrize("value", ["True", "true", "TRUE"])
+def test_claude_cli_args_minimal_mode(value):
+    assert cli_args_for({"minimal_mode": value}) == MINIMAL_FLAGS
+
+
+def test_claude_cli_args_minimal_mode_false():
+    assert cli_args_for({"minimal_mode": "False"}) == []
+
+
+def test_claude_cli_args_effort():
+    assert cli_args_for({"effort": "medium"}) == ["--effort", "medium"]
+
+
+def test_claude_cli_args_order():
+    values = {
+        "minimal_mode": "True",
+        "effort": "high",
+        "cli_args": "--add-dir '/tmp/my dir'",
+    }
+    assert cli_args_for(values) == MINIMAL_FLAGS + [
+        "--effort",
+        "high",
+        "--add-dir",
+        "/tmp/my dir",
+    ]
+
+
+def test_claude_cli_args_invalid_effort_raises():
+    with pytest.raises(ValueError, match="invalid effort 'turbo'"):
+        cli_args_for({"effort": "turbo"})
+
+
+def test_claude_cli_args_unparsable_cli_args_raises():
+    with pytest.raises(ValueError, match="could not parse cli_args"):
+        cli_args_for({"cli_args": 'a "b'})
+
+
+def test_claude_cli_args_warns_on_effort_flag(caplog):
+    with caplog.at_level(logging.WARNING):
+        args = cli_args_for({"cli_args": "--effort=high"})
+    assert args == ["--effort=high"]
+    assert "cli_args sets --effort" in caplog.text
+
+
+def test_claude_cli_args_warns_when_minimal_mode_is_overridden(caplog):
+    with caplog.at_level(logging.WARNING):
+        args = cli_args_for(
+            {"minimal_mode": "true", "cli_args": "--tools Bash"}
+        )
+    assert args[-2:] == ["--tools", "Bash"]
+    assert "cli_args sets --tools, which minimal_mode turned off" in caplog.text
+
+
+@pytest.mark.parametrize("value", ["True", "true"])
+@patch("subprocess.run")
+@patch("fish_ai.engine.get_config")
+def test_subscription_argv(mock_get_config, mock_run, value):
+    config = dict(SUBSCRIPTION_CONFIG, use_subscription=value)
+    mock_get_config.side_effect = config_from(config)
+    mock_run.return_value = MagicMock(returncode=0, stdout="echo hi", stderr="")
+
+    messages = [
+        {"role": "system", "content": "Be brief."},
+        {"role": "user", "content": "example question"},
+        {"role": "assistant", "content": "example answer"},
+        {"role": "user", "content": "say hi"},
+    ]
+    assert get_response(messages=messages) == "echo hi"
+
+    argv = mock_run.call_args[0][0]
+    assert argv == [
+        "claude",
+        "-p",
+        "say hi",
+        (
+            "--system-prompt=Be brief.\n\n"
+            "Previous exchanges:\n"
+            "User: example question\n"
+            "Assistant: example answer"
+        ),
+        "--model",
+        "claude-sonnet-5-5",
+        *MINIMAL_FLAGS,
+        "--effort",
+        "medium",
+    ]
+
+
+def test_claude_prompt_single_user_message():
+    messages = [
+        {"role": "system", "content": "System A"},
+        {"role": "system", "content": "System B"},
+        {"role": "user", "content": "the request"},
+    ]
+    assert get_claude_prompt(messages) == (
+        "System A\n\nSystem B",
+        "the request",
+    )
+
+
+def test_claude_prompt_without_trailing_user_message():
+    messages = [{"role": "system", "content": "System A"}]
+    assert get_claude_prompt(messages) == ("System A", "")
+
+
+@patch("subprocess.run")
+@patch("fish_ai.engine.get_config")
+def test_subscription_invalid_effort_raises_before_cli_runs(
+    mock_get_config, mock_run
+):
+    config = dict(SUBSCRIPTION_CONFIG, effort="turbo")
+    mock_get_config.side_effect = config_from(config)
+
+    with pytest.raises(ValueError, match="invalid effort"):
+        get_response(messages=[{"role": "user", "content": "hi"}])
+    mock_run.assert_not_called()

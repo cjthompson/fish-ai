@@ -122,9 +122,11 @@ def get_instructions(
     if filename:
         instructions[-1]["content"] = (
             textwrap.dedent("""\
-            The content of the file {filename} is'
+            The content of the file {filename} is:
 
             {file_contents}
+
+            ---
 
             """).format(filename=filename, file_contents=file_contents)
             + instructions[-1]["content"]

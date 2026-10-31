@@ -2,7 +2,7 @@
 
 from unittest.mock import patch
 
-from fish_ai.autocomplete import autocomplete, get_pipe
+from fish_ai.autocomplete import autocomplete, get_instructions, get_pipe
 
 
 @patch("fish_ai.engine.get_args", lambda: ["echo hello", 10])
@@ -59,4 +59,16 @@ def test_get_pipe():
         query {
             blah blah
         }'"""
+    )
+
+
+@patch("fish_ai.engine.get_config", lambda key: None)
+@patch(
+    "fish_ai.engine.get_file_info",
+    lambda commandline: ("Cargo.toml", "[package]"),
+)
+def test_autocomplete_file_content_is_separated_from_request():
+    content = get_instructions("cat Cargo.toml", 14, 5, "")[-1]["content"]
+    assert content.startswith(
+        "The content of the file Cargo.toml is:\n\n[package]\n\n---\n\n"
     )

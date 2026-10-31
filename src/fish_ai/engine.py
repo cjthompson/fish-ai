@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 
 import logging
+import shlex
+import sys
 import textwrap
 from itertools import islice
 from logging.handlers import RotatingFileHandler, SysLogHandler
@@ -399,6 +401,101 @@ def create_system_prompt(messages):
     )
 
 
+def get_bool_config(key):
+    """True when the config value is "true", in any letter case."""
+    return (get_config(key) or "").lower() == "true"
+
+
+CLAUDE_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
+# Flags that minimal_mode turns off; cli_args can turn them back on.
+MINIMAL_MODE_FLAGS = (
+    "--setting-sources",
+    "--disable-slash-commands",
+    "--strict-mcp-config",
+    "--tools",
+)
+
+
+def get_claude_cli_args():
+    """Extra arguments for the Claude CLI, built from the Anthropic config.
+
+    Options, in order: minimal_mode, effort, cli_args.
+    """
+    args = []
+
+    minimal_mode = get_bool_config("minimal_mode")
+    if minimal_mode:
+        # Skip user, project and local settings (hooks, plugins, CLAUDE.md),
+        # skills, MCP servers and built-in tools. Subscription auth still works.
+        args += [
+            "--setting-sources",
+            "",
+            "--disable-slash-commands",
+            "--strict-mcp-config",
+            "--tools",
+            "",
+        ]
+
+    if effort := get_config("effort"):
+        if effort not in CLAUDE_EFFORT_LEVELS:
+            raise ValueError(
+                f"invalid effort '{effort}' in fish-ai.ini. "
+                f"Expected one of: {', '.join(CLAUDE_EFFORT_LEVELS)}."
+            )
+        args += ["--effort", effort]
+
+    if extra := get_config("cli_args"):
+        try:
+            extra_args = shlex.split(extra)
+        except ValueError as e:
+            raise ValueError(
+                f"could not parse cli_args in fish-ai.ini: {e}"
+            ) from e
+        for arg in extra_args:
+            flag = arg.split("=", 1)[0]
+            if flag == "--effort":
+                logger.warning(
+                    "cli_args sets --effort; use the effort setting instead"
+                )
+            elif minimal_mode and flag in MINIMAL_MODE_FLAGS:
+                logger.warning(
+                    f"cli_args sets {flag}, which minimal_mode turned off"
+                )
+        args += extra_args
+
+    return args
+
+
+def get_claude_prompt(messages):
+    """Split chat messages into (system prompt, prompt) for the Claude CLI.
+
+    The last user message is the prompt. System messages and earlier turns
+    (the few-shot examples) become text in the system prompt, so the model
+    does not receive a Python repr of the whole chat.
+    """
+    system_parts = []
+    turns = []
+    for message in messages:
+        if message.get("role") == "system":
+            system_parts.append(message.get("content"))
+        else:
+            turns.append(message)
+
+    prompt = ""
+    if turns and turns[-1].get("role") == "user":
+        prompt = turns.pop().get("content")
+
+    if turns:
+        lines = [
+            f"{message.get('role').capitalize()}: {message.get('content')}"
+            for message in turns
+        ]
+        system_parts.append("Previous exchanges:\n" + "\n".join(lines))
+
+    return "\n\n".join(system_parts), prompt
+
+
 def get_response(messages):
     if get_config("redact") != "False":
         messages = redact(messages)
@@ -408,21 +505,29 @@ def get_response(messages):
     custom_headers = get_custom_headers()
 
     if get_config("provider") == "anthropic":
-        if get_config("use_subscription") == "True":
+        if get_bool_config("use_subscription"):
             # Use the subscription through the Claude CLI
             try:
                 import subprocess
-                import sys
 
-                args = ["claude", "-p", str(messages)]
+                system_prompt, prompt = get_claude_prompt(messages)
+                args = ["claude", "-p", prompt]
+                if system_prompt:
+                    args += [f"--system-prompt={system_prompt}"]
                 model = get_config("model")
                 if model:
                     args += ["--model", model]
+                # Options go after the prompt: --tools is variadic
+                args += get_claude_cli_args()
                 result = subprocess.run(
                     args,
                     capture_output=True,
                     text=True,
                     check=True,
+                )
+                logger.debug(
+                    f"claude exit={result.returncode} "
+                    f"stderr={result.stderr[:500]!r}"
                 )
                 return result.stdout
             except FileNotFoundError:
