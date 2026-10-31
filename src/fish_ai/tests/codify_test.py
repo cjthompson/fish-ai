@@ -24,9 +24,11 @@ def test_unsuccessful_codify(_, caplog):
 
 @patch("fish_ai.engine.get_args", lambda: ["# hello"])
 @patch("fish_ai.engine.get_response", lambda messages: None)
-def test_codify_handles_none_response(capsys):
+def test_codify_empty_response_is_reported(capsys):
     codify()
-    assert "An error occurred" not in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert out.startswith("# An error occurred when running fish-ai.")
+    assert "empty response" in out
 
 
 @patch("fish_ai.engine.get_args", lambda: ["# hello"])

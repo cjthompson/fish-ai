@@ -724,7 +724,6 @@ def test_subscription_argv(mock_get_config, mock_run, value):
     assert argv == [
         "claude",
         "-p",
-        "say hi",
         (
             "--system-prompt=Be brief.\n\n"
             "Previous exchanges:\n"
@@ -737,6 +736,22 @@ def test_subscription_argv(mock_get_config, mock_run, value):
         "--effort",
         "medium",
     ]
+    assert mock_run.call_args.kwargs["input"] == "say hi"
+
+
+@patch("subprocess.run")
+@patch("fish_ai.engine.get_config")
+def test_subscription_prompt_starting_with_dash_is_not_an_option(
+    mock_get_config, mock_run
+):
+    mock_get_config.side_effect = config_from(SUBSCRIPTION_CONFIG)
+    mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
+
+    get_response(messages=[{"role": "user", "content": "-n 5 largest files"}])
+
+    argv = mock_run.call_args[0][0]
+    assert not any("-n 5" in arg for arg in argv)
+    assert mock_run.call_args.kwargs["input"] == "-n 5 largest files"
 
 
 def test_claude_prompt_single_user_message():

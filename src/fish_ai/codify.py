@@ -33,12 +33,8 @@ def get_instructions(commandline):
     ]
     (filename, file_contents) = engine.get_file_info(commandline)
     if filename:
-        instructions[-1]["content"] += "\n\n---\n\n" + textwrap.dedent("""\
-            The content of the file {filename} is:
-
-            {file_contents}""").format(
-            filename=filename, file_contents=file_contents
-        )
+        block = engine.format_file_content(filename, file_contents)
+        instructions[-1]["content"] += engine.FILE_SEPARATOR + block
     return instructions
 
 
@@ -57,6 +53,8 @@ def codify():
         engine.get_logger().debug("Codifying commandline: " + commandline)
         response = engine.get_response(messages=get_messages(commandline))
         engine.get_logger().debug(f"Codify response: {response!r}")
+        if not response:
+            raise ValueError("the model returned an empty response")
         print(response, end="")
     except Exception as e:
         engine.get_logger().exception(e)

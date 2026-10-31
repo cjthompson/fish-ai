@@ -72,3 +72,31 @@ def test_autocomplete_file_content_is_separated_from_request():
     assert content.startswith(
         "The content of the file Cargo.toml is:\n\n[package]\n\n---\n\n"
     )
+
+
+@patch("fish_ai.engine.get_args", lambda: ["# hello"])
+@patch(
+    "fish_ai.engine.get_response",
+    side_effect=ValueError("invalid effort 'turbo' in fish-ai.ini."),
+)
+def test_autocomplete_codify_config_error_is_printed_in_band(_, capsys):
+    autocomplete()
+    out = capsys.readouterr().out
+    assert out.startswith("# An error occurred when running fish-ai.")
+    assert "invalid effort 'turbo'" in out
+
+
+@patch("fish_ai.engine.get_args", lambda: ["echo hello", 10])
+@patch(
+    "fish_ai.engine.get_config",
+    lambda key: {"use_subscription": "true", "effort": "turbo"}.get(key),
+)
+@patch("fish_ai.autocomplete.iterfzf")
+def test_autocomplete_bad_claude_config_is_reported_before_picker(
+    mock_iterfzf, capsys
+):
+    autocomplete()
+    out = capsys.readouterr().out
+    assert out.startswith("# An error occurred when running fish-ai.")
+    assert "invalid effort 'turbo'" in out
+    mock_iterfzf.assert_not_called()

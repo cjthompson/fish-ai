@@ -120,16 +120,9 @@ def get_instructions(
 
     (filename, file_contents) = engine.get_file_info(commandline)
     if filename:
+        block = engine.format_file_content(filename, file_contents)
         instructions[-1]["content"] = (
-            textwrap.dedent("""\
-            The content of the file {filename} is:
-
-            {file_contents}
-
-            ---
-
-            """).format(filename=filename, file_contents=file_contents)
-            + instructions[-1]["content"]
+            block + engine.FILE_SEPARATOR + instructions[-1]["content"]
         )
 
     return instructions
@@ -238,24 +231,27 @@ def autocomplete():
     engine.get_logger().info("----- BEGIN SESSION -----")
 
     commandline = engine.get_args()[0]
-    if commandline.startswith("#"):
-        engine.get_logger().debug(
-            "Codifying commandline before completion using instructions: "
-            + commandline[1:].strip()
-        )
-        from fish_ai.codify import get_messages
-
-        commandline = engine.get_response(
-            messages=get_messages(commandline[1:].strip())
-        )
-        cursor_position = len(commandline)
-    else:
-        cursor_position = int(engine.get_args()[1])
-
-    before_cursor = commandline[:cursor_position]
-    after_cursor = commandline[cursor_position:]
-
     try:
+        if engine.get_bool_config("use_subscription"):
+            # Raises on an invalid effort or cli_args before the picker opens
+            engine.get_claude_cli_args()
+        if commandline.startswith("#"):
+            engine.get_logger().debug(
+                "Codifying commandline before completion using instructions: "
+                + commandline[1:].strip()
+            )
+            from fish_ai.codify import get_messages
+
+            commandline = engine.get_response(
+                messages=get_messages(commandline[1:].strip())
+            )
+            cursor_position = len(commandline)
+        else:
+            cursor_position = int(engine.get_args()[1])
+
+        before_cursor = commandline[:cursor_position]
+        after_cursor = commandline[cursor_position:]
+
         engine.get_logger().debug(
             "Autocompleting commandline: {}".format(
                 before_cursor + "█" + after_cursor

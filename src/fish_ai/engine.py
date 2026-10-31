@@ -108,6 +108,14 @@ def get_file_info(words):
     return None, None
 
 
+# Separates the request from the file block in prompts.
+FILE_SEPARATOR = "\n\n---\n\n"
+
+
+def format_file_content(filename, file_contents):
+    return f"The content of the file {filename} is:\n\n{file_contents}"
+
+
 def get_commandline_history(commandline, cursor_position):
     history_size = int(get_config("history_size") or 0)
     if history_size == 0:
@@ -408,12 +416,18 @@ def get_bool_config(key):
 
 CLAUDE_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
-# Flags that minimal_mode turns off; cli_args can turn them back on.
-MINIMAL_MODE_FLAGS = (
+# Arguments that minimal_mode adds. The flag names are derived from this.
+MINIMAL_MODE_ARGS = (
     "--setting-sources",
+    "",
     "--disable-slash-commands",
     "--strict-mcp-config",
     "--tools",
+    "",
+)
+# Flags that minimal_mode turns off; cli_args can turn them back on.
+MINIMAL_MODE_FLAGS = tuple(
+    arg for arg in MINIMAL_MODE_ARGS if arg.startswith("--")
 )
 
 
@@ -428,14 +442,7 @@ def get_claude_cli_args():
     if minimal_mode:
         # Skip user, project and local settings (hooks, plugins, CLAUDE.md),
         # skills, MCP servers and built-in tools. Subscription auth still works.
-        args += [
-            "--setting-sources",
-            "",
-            "--disable-slash-commands",
-            "--strict-mcp-config",
-            "--tools",
-            "",
-        ]
+        args += MINIMAL_MODE_ARGS
 
     if effort := get_config("effort"):
         if effort not in CLAUDE_EFFORT_LEVELS:
@@ -455,11 +462,11 @@ def get_claude_cli_args():
         for arg in extra_args:
             flag = arg.split("=", 1)[0]
             if flag == "--effort":
-                logger.warning(
+                get_logger().warning(
                     "cli_args sets --effort; use the effort setting instead"
                 )
             elif minimal_mode and flag in MINIMAL_MODE_FLAGS:
-                logger.warning(
+                get_logger().warning(
                     f"cli_args sets {flag}, which minimal_mode turned off"
                 )
         args += extra_args
@@ -474,13 +481,7 @@ def get_claude_prompt(messages):
     (the few-shot examples) become text in the system prompt, so the model
     does not receive a Python repr of the whole chat.
     """
-    system_parts = []
-    turns = []
-    for message in messages:
-        if message.get("role") == "system":
-            system_parts.append(message.get("content"))
-        else:
-            turns.append(message)
+    system_parts, turns = get_messages_for_anthropic(messages)
 
     prompt = ""
     if turns and turns[-1].get("role") == "user":
@@ -496,6 +497,21 @@ def get_claude_prompt(messages):
     return "\n\n".join(system_parts), prompt
 
 
+def get_claude_argv(system_prompt):
+    """Argument list for the Claude CLI subscription path.
+
+    The prompt itself is sent on stdin, so text that starts with "-" is
+    not read as a CLI option.
+    """
+    args = ["claude", "-p"]
+    if system_prompt:
+        args += [f"--system-prompt={system_prompt}"]
+    model = get_config("model")
+    if model:
+        args += ["--model", model]
+    return args + get_claude_cli_args()
+
+
 def get_response(messages):
     if get_config("redact") != "False":
         messages = redact(messages)
@@ -507,25 +523,19 @@ def get_response(messages):
     if get_config("provider") == "anthropic":
         if get_bool_config("use_subscription"):
             # Use the subscription through the Claude CLI
+            system_prompt, prompt = get_claude_prompt(messages)
+            args = get_claude_argv(system_prompt)
             try:
                 import subprocess
 
-                system_prompt, prompt = get_claude_prompt(messages)
-                args = ["claude", "-p", prompt]
-                if system_prompt:
-                    args += [f"--system-prompt={system_prompt}"]
-                model = get_config("model")
-                if model:
-                    args += ["--model", model]
-                # Options go after the prompt: --tools is variadic
-                args += get_claude_cli_args()
                 result = subprocess.run(
                     args,
+                    input=prompt,
                     capture_output=True,
                     text=True,
                     check=True,
                 )
-                logger.debug(
+                get_logger().debug(
                     f"claude exit={result.returncode} "
                     f"stderr={result.stderr[:500]!r}"
                 )
