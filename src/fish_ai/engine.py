@@ -7,7 +7,7 @@ from logging.handlers import RotatingFileHandler, SysLogHandler
 from os import R_OK, access, environ
 from os.path import exists, expanduser, expandvars, isfile
 from platform import mac_ver, system
-from re import match
+from re import findall, match
 from subprocess import DEVNULL, PIPE, Popen, run
 from sys import argv
 from time import time_ns
@@ -136,6 +136,107 @@ def get_commandline_history(commandline, cursor_position):
     if len(history) == 0:
         return "No commandline history available."
     return "\n".join(history)
+
+
+# Common English words that identify no command. get_keywords drops them so
+# the keyword cap goes to words that do.
+_STOPWORDS = frozenset(
+    {
+        "the",
+        "and",
+        "for",
+        "with",
+        "from",
+        "into",
+        "that",
+        "this",
+        "all",
+        "any",
+        "are",
+        "was",
+        "has",
+        "have",
+        "then",
+        "than",
+        "its",
+        "our",
+        "your",
+        "you",
+        "how",
+        "what",
+        "when",
+        "where",
+        "which",
+        "but",
+        "not",
+        "out",
+        "off",
+        "over",
+        "under",
+        "use",
+        "using",
+        "can",
+        "please",
+    }
+)
+
+_KEYWORD_HISTORY_SCRIPT = "history search --null --max $argv[1] -- $argv[2]"
+
+
+def get_keywords(text):
+    keywords = []
+    for token in findall(r"[A-Za-z0-9_.-]+", text.lower()):
+        token = token.strip(".-")
+        if len(token) < 3 or token in _STOPWORDS:
+            continue
+        if not any(char.isalnum() for char in token):
+            continue
+        if token not in keywords:
+            keywords.append(token)
+        if len(keywords) == 5:
+            break
+    return keywords
+
+
+# Returns up to history_size fish history entries matching keywords from text.
+# Entries matching more keywords come first; ties keep first-seen order. Runs
+# one history search per keyword. Returns [] when history_size is 0 or unset,
+# or when any step fails; never raises.
+def get_keyword_history(text):
+    try:
+        history_size = int(get_config("history_size") or 0)
+        if history_size <= 0:
+            get_logger().debug("Keyword history disabled.")
+            return []
+        counts = {}
+        for keyword in get_keywords(text):
+            proc = run(
+                [
+                    "fish",
+                    "-c",
+                    _KEYWORD_HISTORY_SCRIPT,
+                    "--",
+                    str(history_size),
+                    keyword,
+                ],
+                stdout=PIPE,
+                stderr=DEVNULL,
+            )
+            if proc.returncode != 0:
+                continue
+            entries = (
+                chunk.decode("utf-8", errors="replace").strip()
+                for chunk in proc.stdout.split(b"\0")
+            )
+            for entry in dict.fromkeys(item for item in entries if item):
+                counts[entry] = counts.get(entry, 0) + 1
+        ranked = sorted(counts, key=lambda entry: -counts[entry])
+        return ranked[:history_size]
+    except Exception as e:
+        get_logger().debug(
+            "Failed to retrieve keyword history. Reason: {}".format(str(e))
+        )
+        return []
 
 
 def get_system_prompt():

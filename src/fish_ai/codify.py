@@ -31,6 +31,12 @@ def get_instructions(commandline):
         {"role": "assistant", "content": 'sed -i "s/foo/bar/g" $file'},
         {"role": "user", "content": commandline},
     ]
+    history = engine.get_keyword_history(commandline)
+    if history:
+        instructions[0]["content"] += (
+            "\nYou may use the following commandline history to match the "
+            "user's preferred tools and flags:\n\n" + "\n".join(history)
+        )
     (filename, file_contents) = engine.get_file_info(commandline)
     if filename:
         instructions[-1]["content"] += textwrap.dedent("""\

@@ -422,6 +422,13 @@ value is `0` (do not send any commandline history).
 history_size = 5
 ```
 
+The same option also applies when you press **Ctrl + P** on a comment to turn
+it into a command. In that case `fish-ai` does not send your most recent
+commands. Instead, it picks out up to five keywords from the comment and
+searches your fish history for each of them. The entries that match the most
+keywords are sent to the language model, up to `history_size` entries in total.
+If `history_size` is `0`, or no history entries match, no history is sent.
+
 If you enable this option, consider the use of [`sponge`](https://github.com/meaningful-ooo/sponge)
 to automatically remove broken commands from your commandline history.
 
@@ -481,8 +488,9 @@ files you mention (as long as the file is readable), and when you explain
 or complete a command, the output from `<command> --help` is provided to
 the language model for reference.
 
-`fish-ai` can also send an excerpt of your commandline history
-when completing a command. This is disabled by default.
+`fish-ai` can also send an excerpt of your commandline history when
+completing a command, or when you turn a comment into a command (the entries
+that match keywords in your comment). This is disabled by default.
 
 Finally, to fix the previous command, the previous commandline buffer,
 along with any terminal output and the corresponding exit code is sent
@@ -502,6 +510,10 @@ The following information is redacted:
 - Passwords and API keys supplied as commandline arguments
 - PEM-encoded private keys stored in files
 - Bearer tokens, provided to e.g. cURL
+
+Redaction does not cover environment variable assignments such as
+`TOKEN=x cmd`, short flags, or credentials embedded in URLs, so those may be
+sent in the commandline history when `history_size` is enabled.
 
 If you trust the language model provider (e.g. because you are hosting
 locally) you can disable redaction using the `redact = False` option.

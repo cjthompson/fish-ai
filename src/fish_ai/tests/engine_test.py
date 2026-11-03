@@ -1,12 +1,24 @@
 # -*- coding: utf-8 -*-
 
+from subprocess import DEVNULL, PIPE
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from fish_ai.engine import (
+    _KEYWORD_HISTORY_SCRIPT,
     get_commandline_history,
+    get_keyword_history,
+    get_keywords,
     get_messages,
     get_response,
 )
+
+
+def _proc(entries, returncode=0):
+    return SimpleNamespace(
+        returncode=returncode,
+        stdout="\0".join(entries).encode("utf-8"),
+    )
 
 
 def test_get_messages():
@@ -36,6 +48,182 @@ def test_get_commandline_history_disabled(mock_get_logger, mock_get_config):
         == "No commandline history available."
     )
     mock_get_logger.assert_called_once()
+
+
+def test_get_keywords_removes_stopwords_and_short_words():
+    assert get_keywords("List the files for all of us") == ["list", "files"]
+
+
+def test_get_keywords_lowercases_and_dedupes_in_first_seen_order():
+    assert get_keywords("Docker pull DOCKER image pull") == [
+        "docker",
+        "pull",
+        "image",
+    ]
+
+
+def test_get_keywords_caps_at_five():
+    assert get_keywords("alpha bravo charlie delta echo foxtrot golf") == [
+        "alpha",
+        "bravo",
+        "charlie",
+        "delta",
+        "echo",
+    ]
+
+
+def test_get_keywords_strips_leading_and_trailing_dots_and_dashes():
+    assert get_keywords("..config -verbose- .hidden. file.txt") == [
+        "config",
+        "verbose",
+        "hidden",
+        "file.txt",
+    ]
+
+
+def test_get_keywords_drops_tokens_without_alphanumerics():
+    assert get_keywords("--- ... _ __ ___ -.- git") == ["git"]
+
+
+def test_get_keywords_empty_input():
+    assert get_keywords("") == []
+
+
+@patch("fish_ai.engine.get_config")
+@patch("fish_ai.engine.get_logger")
+@patch("fish_ai.engine.run")
+def test_get_keyword_history_disabled(
+    mock_run, mock_get_logger, mock_get_config
+):
+    mock_get_config.return_value = "0"
+    assert get_keyword_history("list docker images") == []
+    mock_run.assert_not_called()
+    mock_get_logger.assert_called_once()
+    mock_get_logger.return_value.debug.assert_called_once_with(
+        "Keyword history disabled."
+    )
+
+
+@patch("fish_ai.engine.get_config")
+@patch("fish_ai.engine.get_logger")
+@patch("fish_ai.engine.run")
+def test_get_keyword_history_unset_or_negative_makes_no_subprocess_call(
+    mock_run, mock_get_logger, mock_get_config
+):
+    for value in (None, "", "-3"):
+        mock_get_config.return_value = value
+        assert get_keyword_history("list docker images") == []
+    mock_run.assert_not_called()
+
+
+@patch("fish_ai.engine.get_config")
+@patch("fish_ai.engine.get_logger")
+@patch("fish_ai.engine.run")
+def test_get_keyword_history_non_numeric_size_returns_empty(
+    mock_run, mock_get_logger, mock_get_config
+):
+    mock_get_config.return_value = "abc"
+    assert get_keyword_history("docker images") == []
+    mock_run.assert_not_called()
+
+
+@patch("fish_ai.engine.get_config")
+@patch("fish_ai.engine.run")
+def test_get_keyword_history_ranks_by_keyword_match_count(
+    mock_run, mock_get_config
+):
+    mock_get_config.return_value = "5"
+    mock_run.side_effect = [
+        _proc(["docker ps", "docker images -a", "docker pull alpine"]),
+        _proc(["docker images -a", "podman images"]),
+    ]
+    assert get_keyword_history("docker images") == [
+        "docker images -a",
+        "docker ps",
+        "docker pull alpine",
+        "podman images",
+    ]
+    assert mock_run.call_count == 2
+    assert mock_run.call_args_list[0].args[0] == [
+        "fish",
+        "-c",
+        _KEYWORD_HISTORY_SCRIPT,
+        "--",
+        "5",
+        "docker",
+    ]
+    assert mock_run.call_args_list[0].kwargs == {
+        "stdout": PIPE,
+        "stderr": DEVNULL,
+    }
+
+
+@patch("fish_ai.engine.get_config")
+@patch("fish_ai.engine.run")
+def test_get_keyword_history_dedupes_within_a_keyword_and_ignores_empty_chunks(
+    mock_run, mock_get_config
+):
+    mock_get_config.return_value = "5"
+    mock_run.side_effect = [
+        SimpleNamespace(
+            returncode=0,
+            stdout=b"docker ps\0docker ps\0\0 docker ps \0docker run alpine\0",
+        ),
+        _proc(["docker run alpine"]),
+    ]
+    assert get_keyword_history("docker images") == [
+        "docker run alpine",
+        "docker ps",
+    ]
+
+
+@patch("fish_ai.engine.get_config")
+@patch("fish_ai.engine.run")
+def test_get_keyword_history_caps_at_history_size(mock_run, mock_get_config):
+    mock_get_config.return_value = "2"
+    mock_run.side_effect = [_proc(["docker a", "docker b", "docker c"])]
+    assert get_keyword_history("docker") == ["docker a", "docker b"]
+    assert mock_run.call_args.args[0][4] == "2"
+
+
+@patch("fish_ai.engine.get_config")
+@patch("fish_ai.engine.run")
+def test_get_keyword_history_no_matches(mock_run, mock_get_config):
+    mock_get_config.return_value = "5"
+    mock_run.side_effect = [_proc([]), _proc([])]
+    assert get_keyword_history("docker images") == []
+    mock_run.reset_mock()
+    assert get_keyword_history("the of") == []
+    mock_run.assert_not_called()
+
+
+@patch("fish_ai.engine.get_config")
+@patch("fish_ai.engine.run")
+def test_get_keyword_history_skips_keyword_on_nonzero_returncode(
+    mock_run, mock_get_config
+):
+    mock_get_config.return_value = "5"
+    mock_run.side_effect = [
+        _proc(["docker ps"], returncode=1),
+        _proc(["docker images -a"]),
+    ]
+    assert get_keyword_history("docker images") == ["docker images -a"]
+    assert mock_run.call_count == 2
+
+
+@patch("fish_ai.engine.get_config")
+@patch("fish_ai.engine.get_logger")
+@patch("fish_ai.engine.run")
+def test_get_keyword_history_returns_empty_on_exception(
+    mock_run, mock_get_logger, mock_get_config
+):
+    mock_get_config.return_value = "5"
+    mock_run.side_effect = OSError("fish not found")
+    assert get_keyword_history("docker images") == []
+    mock_debug = mock_get_logger.return_value.debug
+    assert mock_debug.call_count == 1
+    debug_message = mock_debug.call_args.args[0]
+    assert "fish not found" in debug_message
 
 
 @patch("fish_ai.engine.get_config")
